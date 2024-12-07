@@ -2,7 +2,7 @@
 Simulating portfolio returns
 
 Features:
-  1.Different inputs allow you to flexibly apply the simulator to your situation
+  1. Different inputs allow you to flexibly apply the simulator to your situation
   2. Different allocations between stocks and bonds across the lifecycle of an investor
   3. Graph plotting final portfolio sizes for each simulation using your inputs
   4. Table showing percentiles of portfolio outcomes displaying left tail risk
