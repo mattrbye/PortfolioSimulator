@@ -1,0 +1,324 @@
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(scales)
+library(DT)
+
+data <- read.csv("./returns.csv")
+
+ui <- fluidPage(
+  titlePanel("Portfolio Simulation"),
+  
+  fluidRow(
+    column(12, 
+           HTML("<p>This application simulates the growth of your investment portfolio over time based on inputs like 
+           your <b>current age</b>, <b>retirement age</b>, <b>initial investment</b>, <b>annual contributions</b>, 
+           <p>The app uses a <b>&quot;blocked bootstrap&quot;</b> sampling method. Unlike traditional bootstrapping, 
+           which selects random single-year returns, the blocked bootstrap selects consecutive multi-year blocks 
+           (default is 5 years). This approach preserves the natural patterns in historical data, such as 
+           stock market crashes and recoveries, while maintaining randomness and uncertainty.</p>
+           
+           <p>The model uses historical U.S. stock and 10-year bond return data from <b>1928 to 2023</b>.</p><br>")),
+           
+           column(6,
+                  HTML("<p><b>New features/Bug fixes:</b><br>
+                        <p>All allocation options work, hopefully
+                        <p>Inflation option")),
+            column(6,
+                HTML("<b>Additional Note on portfolio risk:</b><br>
+                Portfolio risk can be defined annual volatility, which makes stocks
+                riskier than bonds due to their higher swing in returns. I think 
+                this is a very misleading and poor definition.<br><br>
+                I think a much better definition would be the <b>risk of 
+                not meeting retirement goals</b>.<br><br>
+                Test out a 100% bond portfolio, while accounting for inflation and
+                tell me bonds are <b>\"safe\"</b>.<br><br><br> ")
+    )
+  ),
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("current_age", "Current Age", 28),
+      numericInput("retirement_age", "Retirement Age", 65),
+      numericInput("initial_investment", "Initial Investment ($)", 10000),
+      numericInput("annual_contribution", "Annual Contribution ($)", 12000),
+      selectInput("allocation_type", "Allocation Type",
+                  choices = list(
+                    "Set Allocation (won't change over time)" = "set",
+                    "100 - Age (70/30 stock/bond split at age 30)" = "100_minus_age",
+                    "120 - Age (90/10 stock/bond split at age 30)" = "120_minus_age",
+                    "140 - Age (90/10 stock/bond split at age 50)" = "140_minus_age",
+                    "DIY (set own rules)" = "diy"
+                  )),
+      conditionalPanel(
+        condition = "input.allocation_type == 'set'",
+        numericInput("stock_set", "Stock Allocation (%)", 80, min = 0, max = 100)
+      ),
+      conditionalPanel(
+        condition = "input.allocation_type == 'diy'",
+        numericInput("stock_prior_to_age1", "Stock Allocation Before Age 1 (%)", 100),
+        numericInput("age1", "Age 1", 40),
+        numericInput("stock_prior_to_age2", "Stock Allocation Before Age 2 (%)", 80),
+        numericInput("age2", "Age 2", 50),
+        numericInput("stock_after_age2", "Stock Allocation After Age 2 (%)", 70)
+      ),
+      numericInput("n_samples", "Number of Samples", 1000),
+      helpText("Decrease this number to 500 if it really slow"),
+      numericInput("block_size", "Number of years in each bootstrapped block", 5),
+      helpText("Don't worry about this, this is for Matt and people that care about non-parametric time series analysis"),
+      numericInput("target_amount", "Target Retirement Amount ($)", 2000000),
+      
+      # Add Yes/No button for inflation adjustment
+      radioButtons("inflation", "Adjust for Inflation?",
+                   choices = c("Yes, unfortunately" = "yes", "No - it doesn't exist" = "no"),
+                   selected = "yes"),
+      
+      actionButton("run_sim", "Run Simulation")
+    ),
+    mainPanel(
+      plotOutput("portfolio_plot"),
+      DT::dataTableOutput("summary_table"),
+      tableOutput("probability_table")
+    )
+  )
+)
+
+
+server <- function(input, output) {
+  asset_allocator <- function(type,current_age = NULL, stock_set = NULL, stock_prior_to_age1 = NULL, age1 = NULL,
+                  stock_prior_to_age2 = NULL, age2 = NULL, stock_after_age2 = NULL, n_years = NULL) {
+    
+    stock_allocation <- numeric(length(1:n_years))
+    bond_allocation <- numeric(length(1:n_years))
+    
+    if (type == "set") {
+      stock_allocation[1:n_years] <- (stock_set / 100)
+      bond_allocation[1:n_years] <- 1 - (stock_set / 100)
+      
+    } else if (type == "100_minus_age") {
+      for (i in 1:n_years) {
+        stock_allocation[i] <- (100 - (current_age + i - 1)) / 100
+        bond_allocation[i] <- 1 - stock_allocation[i]
+      }
+      
+    } else if (type == "120_minus_age") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) <= 20) {
+          stock_allocation[i] <- 1
+          bond_allocation[i] <- 0
+        } else {
+          stock_allocation[i] <- ((120 - (current_age + i - 1)) / 100)
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+      
+    } else if (type == "140_minus_age") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) <= 40) {
+          stock_allocation[i] <- 1
+          bond_allocation[i] <- 0
+        } else {
+          stock_allocation[i] <- ((140 - (current_age + i - 1)) / 100)
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+      
+    } else if (type == "diy") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) < age1) {
+          stock_allocation[i] <- stock_prior_to_age1 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        } else if ((current_age + i - 1) < age2) {
+          stock_allocation[i] <- stock_prior_to_age2 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        } else {
+          stock_allocation[i] <- stock_after_age2 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+    }
+    
+    # Return both allocations as a list
+    return(list(stock_allocation = stock_allocation, bond_allocation = bond_allocation))
+  }
+  block_bootstrap <- function(data, n_years, block_size) {
+    data <- as.data.frame(data)
+    n_blocks <- ceiling(n_years / block_size)
+    start_rows <- sample(1:(nrow(data) - block_size + 1), size = n_blocks, replace = TRUE)
+    sampled_indices <- unlist(lapply(start_rows, function(start) start:(start + block_size - 1)))
+    sampled_indices <- sampled_indices[1:n_years]
+    block_bootstrapped_data <- data[sampled_indices, ]
+    return(block_bootstrapped_data)
+  }
+  mpf <- function(current_age, retirement_age,age, inflation, initial_investment, annual_contribution, stock_allocation, 
+                  bond_allocation, stock_return, bond_return, n_years, data, block_size) {
+    block_bootstrapped_data <- block_bootstrap(data,n_years,block_size = 5)
+    if (inflation == "no") {
+      bond_return <- block_bootstrapped_data$tbond10y
+      stock_return <- block_bootstrapped_data$sp
+    } else {
+      bond_return <- block_bootstrapped_data$tbond10y_rr
+      stock_return <- block_bootstrapped_data$sp_rr
+    }
+    
+    portfolio_size <- numeric(length(1:n_years))
+    bond_size <- numeric(length(1:n_years))
+    stock_size <- numeric(length(1:n_years))
+    port_returns <- numeric(length(1:n_years))
+    bond_returns <- numeric(length(1:n_years))
+    stock_returns <- numeric(length(1:n_years))  
+    
+    # portfolio gains and rebalancing
+    for(i in 1:n_years) {
+      if (i == 1){
+        portfolio_size[i] <- initial_investment
+        bond_size[i] <- portfolio_size[i] * bond_allocation[i] * (1 + bond_return[i])
+        stock_size[i] <- portfolio_size[i] * stock_allocation[i] * (1 + stock_return[i])
+        portfolio_size[i] <- stock_size[i] + bond_size[i]
+      } else {
+        bond_size[i] <- ((bond_size[i - 1] + (annual_contribution * bond_allocation[i])) * (1 + bond_return[i]))
+        stock_size[i] <- ((stock_size[i - 1] + (annual_contribution * stock_allocation[i])) * (1 + stock_return[i]))
+        portfolio_size[i] <- bond_size[i] + stock_size[i]
+        
+        if (stock_size[i] > (portfolio_size[i] * stock_allocation[i])) {
+          bond_size[i] <- bond_size[i] + (stock_size[i] - portfolio_size[i] * stock_allocation[i])
+          stock_size[i] <- stock_size[i] - (stock_size[i] - portfolio_size[i] * stock_allocation[i])
+        } else {
+          stock_size[i] <- stock_size[i] + (bond_size[i] - portfolio_size[i] * bond_allocation[i])
+          bond_size[i] <- bond_size[i] - (bond_size[i] - portfolio_size[i] * bond_allocation[i])
+        }
+      }
+      stock_returns[i] <- stock_return[i]
+      bond_returns[i] <- bond_return[i]
+      port_returns[i] <- (stock_return[i] * stock_allocation[i]) + (bond_return[i] * bond_allocation[i])
+    }
+    
+    
+    long <- data.frame(age = age,
+                       portfolio_size = portfolio_size,
+                       stock_size = stock_size,
+                       bond_size = bond_size,
+                       port_returns = port_returns,
+                       stock_returns = stock_returns,
+                       bond_returns = bond_returns)
+    long <- long %>%
+      mutate(portfolio_size = portfolio_size / 1000000,
+             stock_size = stock_size / 1000000,
+             bond_size = bond_size / 1000000)
+    return(long)
+  }
+  
+  n_years_reactive <- reactive({
+    input$retirement_age - input$current_age
+  })
+  age_reactive <- reactive({
+    (input$current_age+1):input$retirement_age
+  })
+  
+  
+  asset_allocation <- reactive({
+    asset_allocator(
+      type = input$allocation_type,
+      current_age = input$current_age,
+      stock_set = input$stock_set,
+      stock_prior_to_age1 = input$stock_prior_to_age1,
+      age1 = input$age1,
+      stock_prior_to_age2 = input$stock_prior_to_age2,
+      age2 = input$age2,
+      stock_after_age2 = input$stock_after_age2,
+      n_years = n_years_reactive()
+    )
+  })
+  
+  # Run simulation when button is clicked
+  simulation_results <- eventReactive(input$run_sim, {
+    n_years <- n_years_reactive()
+    result <- asset_allocation()
+    stock_allocation <- result$stock_allocation
+    bond_allocation <- result$bond_allocation
+   
+    
+    results <- replicate(
+      input$n_samples,
+      mpf(current_age = input$current_age,
+          retirement_age = input$retirement_age,
+          age = age_reactive(),
+          inflation = input$inflation,
+          initial_investment = input$initial_investment,
+          annual_contribution = input$annual_contribution,
+          stock_allocation = stock_allocation,
+          bond_allocation = bond_allocation,
+          stock_return = stock_return,
+          bond_return = bond_return,
+          n_years = input$retirement_age - input$current_age,
+          data = data,
+          block_size = input$block_size
+      ),
+      simplify = FALSE
+    )
+    
+      combined_results <- do.call(rbind, results)
+    # sim_num <- rep(1:ceiling(nrow(combined_results) / input$n_samples),
+    #                each = n_years, length.out = nrow(combined_results))
+    # cbind(combined_results, sim_num)
+  })
+  
+  # Generate Plot
+  output$portfolio_plot <- renderPlot({
+    final_long <- simulation_results() %>%
+      filter(age == input$retirement_age)
+    
+    ggplot(final_long, aes(x = portfolio_size, after_stat(density))) +
+      geom_histogram(position = 'identity', binwidth = 1) +
+      geom_density(alpha = 0.2) +
+      labs(title = "Portfolio Size at Retirement (in millions)", 
+           x = "Portfolio Size ($M)", 
+           y = "Density")
+  })
+  
+  output$summary_table <- DT::renderDataTable({
+    final_long <- simulation_results() %>%
+      filter(age == input$retirement_age)
+
+    summary_data <- final_long %>%
+      summarise(
+        `1st` = round(quantile(portfolio_size, 0.01),2),
+        `5th` = round(quantile(portfolio_size, 0.05),2),
+        `10th` = round(quantile(portfolio_size, 0.10),2),
+        `25th` = round(quantile(portfolio_size, 0.25),2),
+        `50th` = round(quantile(portfolio_size, 0.50),2),
+        `75th` = round(quantile(portfolio_size, 0.75),2),
+        `90th` = round(quantile(portfolio_size, 0.90),2)
+      ) %>%
+      pivot_longer(cols = everything(), 
+                   names_to = "Percentile", 
+                   values_to = "Amount (in millions)")
+    
+    # Return the data as a dynamic table
+    DT::datatable(summary_data, options = list(
+      pageLength = 10,
+      autoWidth = TRUE,
+      searching = FALSE,
+      paging = FALSE
+    ))
+  })
+  
+  
+  # Probability of Success Table
+  output$probability_table <- renderTable({
+    final_long <- simulation_results() %>%
+      filter(age == input$retirement_age)
+    
+    target_amount <- input$target_amount/1000000
+    success_rate <- mean(final_long$portfolio_size >= target_amount)
+    
+    data.frame(
+      Metric = "Probability of Success",
+      Probability = scales::percent(success_rate, accuracy = 0.1)
+    )
+  })
+}
+
+
+# Run the application
+shinyApp(ui = ui, server = server)
