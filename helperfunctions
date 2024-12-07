@@ -1,0 +1,122 @@
+asset_allocator <- function(type,current_age = NULL, stock_set = NULL, stock_prior_to_age1 = NULL, age1 = NULL,
+                  stock_prior_to_age2 = NULL, age2 = NULL, stock_after_age2 = NULL, n_years = NULL) {
+    
+    stock_allocation <- numeric(length(1:n_years))
+    bond_allocation <- numeric(length(1:n_years))
+    
+    if (type == "set") {
+      stock_allocation[1:n_years] <- (stock_set / 100)
+      bond_allocation[1:n_years] <- 1 - (stock_set / 100)
+      
+    } else if (type == "100_minus_age") {
+      for (i in 1:n_years) {
+        stock_allocation[i] <- (100 - (current_age + i - 1)) / 100
+        bond_allocation[i] <- 1 - stock_allocation[i]
+      }
+      
+    } else if (type == "120_minus_age") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) <= 20) {
+          stock_allocation[i] <- 1
+          bond_allocation[i] <- 0
+        } else {
+          stock_allocation[i] <- ((120 - (current_age + i - 1)) / 100)
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+      
+    } else if (type == "140_minus_age") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) <= 40) {
+          stock_allocation[i] <- 1
+          bond_allocation[i] <- 0
+        } else {
+          stock_allocation[i] <- ((140 - (current_age + i - 1)) / 100)
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+      
+    } else if (type == "diy") {
+      for (i in 1:n_years) {
+        if ((current_age + i - 1) < age1) {
+          stock_allocation[i] <- stock_prior_to_age1 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        } else if ((current_age + i - 1) < age2) {
+          stock_allocation[i] <- stock_prior_to_age2 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        } else {
+          stock_allocation[i] <- stock_after_age2 / 100
+          bond_allocation[i] <- 1 - stock_allocation[i]
+        }
+      }
+    }
+    
+    # Return both allocations as a list
+    return(list(stock_allocation = stock_allocation, bond_allocation = bond_allocation))
+  }
+  block_bootstrap <- function(data, n_years, block_size) {
+    data <- as.data.frame(data)
+    n_blocks <- ceiling(n_years / block_size)
+    start_rows <- sample(1:(nrow(data) - block_size + 1), size = n_blocks, replace = TRUE)
+    sampled_indices <- unlist(lapply(start_rows, function(start) start:(start + block_size - 1)))
+    sampled_indices <- sampled_indices[1:n_years]
+    block_bootstrapped_data <- data[sampled_indices, ]
+    return(block_bootstrapped_data)
+  }
+  mpf <- function(current_age, retirement_age,age, inflation, initial_investment, annual_contribution, stock_allocation, 
+                  bond_allocation, stock_return, bond_return, n_years, data, block_size) {
+    block_bootstrapped_data <- block_bootstrap(data,n_years,block_size = 5)
+    if (inflation == "no") {
+      bond_return <- block_bootstrapped_data$tbond10y
+      stock_return <- block_bootstrapped_data$sp
+    } else {
+      bond_return <- block_bootstrapped_data$tbond10y_rr
+      stock_return <- block_bootstrapped_data$sp_rr
+    }
+    
+    portfolio_size <- numeric(length(1:n_years))
+    bond_size <- numeric(length(1:n_years))
+    stock_size <- numeric(length(1:n_years))
+    port_returns <- numeric(length(1:n_years))
+    bond_returns <- numeric(length(1:n_years))
+    stock_returns <- numeric(length(1:n_years))  
+    
+    # portfolio gains and rebalancing
+    for(i in 1:n_years) {
+      if (i == 1){
+        portfolio_size[i] <- initial_investment
+        bond_size[i] <- portfolio_size[i] * bond_allocation[i] * (1 + bond_return[i])
+        stock_size[i] <- portfolio_size[i] * stock_allocation[i] * (1 + stock_return[i])
+        portfolio_size[i] <- stock_size[i] + bond_size[i]
+      } else {
+        bond_size[i] <- ((bond_size[i - 1] + (annual_contribution * bond_allocation[i])) * (1 + bond_return[i]))
+        stock_size[i] <- ((stock_size[i - 1] + (annual_contribution * stock_allocation[i])) * (1 + stock_return[i]))
+        portfolio_size[i] <- bond_size[i] + stock_size[i]
+        
+        if (stock_size[i] > (portfolio_size[i] * stock_allocation[i])) {
+          bond_size[i] <- bond_size[i] + (stock_size[i] - portfolio_size[i] * stock_allocation[i])
+          stock_size[i] <- stock_size[i] - (stock_size[i] - portfolio_size[i] * stock_allocation[i])
+        } else {
+          stock_size[i] <- stock_size[i] + (bond_size[i] - portfolio_size[i] * bond_allocation[i])
+          bond_size[i] <- bond_size[i] - (bond_size[i] - portfolio_size[i] * bond_allocation[i])
+        }
+      }
+      stock_returns[i] <- stock_return[i]
+      bond_returns[i] <- bond_return[i]
+      port_returns[i] <- (stock_return[i] * stock_allocation[i]) + (bond_return[i] * bond_allocation[i])
+    }
+    
+    
+    long <- data.frame(age = age,
+                       portfolio_size = portfolio_size,
+                       stock_size = stock_size,
+                       bond_size = bond_size,
+                       port_returns = port_returns,
+                       stock_returns = stock_returns,
+                       bond_returns = bond_returns)
+    long <- long %>%
+      mutate(portfolio_size = portfolio_size / 1000000,
+             stock_size = stock_size / 1000000,
+             bond_size = bond_size / 1000000)
+    return(long)
+  }
